@@ -65,7 +65,7 @@ with tab_eda:
     
     daily_occ   = df_raw.resample('D').size()
     weekly_occ  = df_raw.resample('W').size()
-    monthly_occ = df_raw.resample('M').size()
+    monthly_occ = df_raw.resample('ME').size()
     
     monthly_growth = monthly_occ.pct_change() * 100
     mean_occ = monthly_occ.mean()
@@ -110,7 +110,10 @@ with tab_eda:
     
     st.header("2. Segmentasi Customer")
     seg_counts = df_raw['Segment'].value_counts()
-    seg_monthly = df_raw.groupby('Segment').resample('M').size().unstack(level=0).fillna(0)
+    
+    # Perbaikan metode agregasi yang usang di Pandas 2.2+ / Streamlit Cloud
+    seg_monthly = df_raw.reset_index().groupby([pd.Grouper(key='Check In', freq='ME'), 'Segment']).size().unstack(fill_value=0)
+    
     seg_colors = {'Government': '#e74c3c', 'Corporate': '#3498db', 'Individual': '#2ecc71'}
     
     fig_seg, axes_seg = plt.subplots(2, 2, figsize=(16, 10))
@@ -124,7 +127,7 @@ with tab_eda:
     axes_seg[0, 1].legend()
 
     box_data = [seg_monthly[seg].values for seg in seg_monthly.columns]
-    bp = axes_seg[1, 0].boxplot(box_data, labels=seg_monthly.columns, patch_artist=True)
+    bp = axes_seg[1, 0].boxplot(box_data, tick_labels=seg_monthly.columns, patch_artist=True)
     for patch, seg in zip(bp['boxes'], seg_monthly.columns):
         patch.set_facecolor(seg_colors[seg])
     axes_seg[1, 0].set_title('Variabilitas Bulanan per Segmen \n(Kotak sempit = Lebih stabil, Kotak tinggi = Musiman kuat)')
@@ -249,7 +252,7 @@ with tab_forecast:
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("🎯 Metrik Akurasi")
-        st.dataframe(df_metrics.style.highlight_min(subset=['MAE', 'RMSE', 'MAPE (%)'], color='lightgreen', axis=0), use_container_width=True)
+        st.dataframe(df_metrics.style.highlight_min(subset=['MAE', 'RMSE', 'MAPE (%)'], color='lightgreen', axis=0), width='stretch')
 
     with col2:
         st.subheader("📈 Komparasi 6 Bulan Terakhir")
@@ -273,4 +276,4 @@ with tab_forecast:
         'XGBoost v1': p_x1.values.astype(int),
         'XGBoost v2': p_x2.values.astype(int)
     })
-    st.dataframe(df_preds, use_container_width=True)
+    st.dataframe(df_preds, width='stretch')
