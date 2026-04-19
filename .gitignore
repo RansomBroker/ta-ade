@@ -1,0 +1,10 @@
+.vscode
+output_comparison
+output_sarima_v1
+output_sarima_v2
+output_xgboost_v1
+output_xgboost_v2
+raw-data
+daily_pattern.png
+segmentasi_customer.png
+trend_okupansi.png
