@@ -6,5 +6,5 @@ seaborn
 statsmodels
 scikit-learn
 pmdarima
-xgboost
+catboost
 streamlit

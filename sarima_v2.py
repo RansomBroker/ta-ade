@@ -270,8 +270,8 @@ model = SARIMAX(
     train,
     order=order,
     seasonal_order=seasonal_order,
-    enforce_stationarity=False,
-    enforce_invertibility=False
+    enforce_stationarity=True,
+    enforce_invertibility=True
 )
 
 results = model.fit(disp=False)
@@ -290,13 +290,9 @@ forecast_test_mean = forecast_test.predicted_mean
 forecast_test_ci = forecast_test.conf_int()
 
 # Hitung metrik error
-mae = mean_absolute_error(test, forecast_test_mean)
-rmse = np.sqrt(mean_squared_error(test, forecast_test_mean))
 mape = np.mean(np.abs((test - forecast_test_mean) / test)) * 100
 
 print(f"\nMetrik Evaluasi (Test Set - {n_test} bulan):")
-print(f"  MAE  : {mae:.2f}")
-print(f"  RMSE : {rmse:.2f}")
 print(f"  MAPE : {mape:.2f}%")
 
 # Tabel perbandingan aktual vs prediksi
@@ -316,16 +312,22 @@ ax.plot(train.index, train.values, marker='o', label='Train', color='#2196F3',
         markersize=4, alpha=0.7)
 ax.plot(test.index, test.values, marker='s', label='Aktual (Test)', color='#4CAF50', 
         markersize=7, linewidth=2)
-ax.plot(forecast_test_mean.index, forecast_test_mean.values, marker='^', 
+ax.plot(test.index, forecast_test_mean.values, marker='^', 
         label='Prediksi (Test)', color='#F44336', markersize=7, linewidth=2, linestyle='--')
-ax.fill_between(forecast_test_ci.index, 
-                forecast_test_ci.iloc[:, 0], 
-                forecast_test_ci.iloc[:, 1], 
+ax.fill_between(test.index, 
+                forecast_test_ci.iloc[:, 0].values, 
+                forecast_test_ci.iloc[:, 1].values, 
                 color='#F44336', alpha=0.15, label='95% Confidence Interval')
 ax.axvline(x=test.index[0], color='gray', linestyle='--', alpha=0.5)
 
+# Fix Y-axis scaling to ignore massive Confidence Intervals
+y_min = min(train.min(), test.min(), forecast_test_mean.min())
+y_max = max(train.max(), test.max(), forecast_test_mean.max())
+y_pad = (y_max - y_min) * 0.2
+ax.set_ylim(max(0, y_min - y_pad), y_max + y_pad)
+
 # Anotasi metrik
-textstr = f'MAE: {mae:.2f}\nRMSE: {rmse:.2f}\nMAPE: {mape:.2f}%'
+textstr = f'MAPE: {mape:.2f}%'
 props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
 ax.text(0.02, 0.97, textstr, transform=ax.transAxes, fontsize=10,
         verticalalignment='top', bbox=props)
@@ -394,8 +396,8 @@ model_full = SARIMAX(
     monthly_checkin,
     order=order,
     seasonal_order=seasonal_order,
-    enforce_stationarity=False,
-    enforce_invertibility=False
+    enforce_stationarity=True,
+    enforce_invertibility=True
 )
 results_full = model_full.fit(disp=False)
 
@@ -435,6 +437,12 @@ ax.axvline(x=monthly_checkin.index[-1], color='gray', linestyle='--', alpha=0.5)
 ax.text(monthly_checkin.index[-1], ax.get_ylim()[1] * 0.95, ' Forecast →', 
         fontsize=10, color='gray', ha='left')
 
+# Fix Y-axis scaling to ignore massive Confidence Intervals
+y_min_fut = min(monthly_checkin.min(), forecast_future_mean.min())
+y_max_fut = max(monthly_checkin.max(), forecast_future_mean.max())
+y_pad_fut = (y_max_fut - y_min_fut) * 0.2
+ax.set_ylim(max(0, y_min_fut - y_pad_fut), y_max_fut + y_pad_fut)
+
 ax.set_title(f'SARIMA{order}x{seasonal_order} - Forecasting Okupansi Hotel 2026', 
              fontsize=14, fontweight='bold')
 ax.set_xlabel('Bulan')
@@ -462,9 +470,7 @@ print(f"✓ Data bulanan disimpan: {OUTPUT_DIR}/data_bulanan_checkin.csv")
 # Simpan hasil evaluasi
 eval_results = {
     'Model': [f'SARIMA{order}x{seasonal_order}'],
-    'MAE': [mae],
-    'RMSE': [rmse],
-    'MAPE': [mape],
+    'MAPE': [round(mape, 2)],
     'AIC': [results.aic],
     'BIC': [results.bic],
     'Train_Size': [len(train)],
@@ -494,8 +500,6 @@ print(f"  Periode Data     : {monthly_checkin.index[0].strftime('%B %Y')} - {mon
 print(f"  Jumlah Data      : {len(monthly_checkin)} bulan")
 print(f"  Train Set        : {len(train)} bulan")
 print(f"  Test Set         : {len(test)} bulan")
-print(f"  MAE              : {mae:.2f}")
-print(f"  RMSE             : {rmse:.2f}")
 print(f"  MAPE             : {mape:.2f}%")
 print(f"  AIC              : {results.aic:.2f}")
 print(f"  BIC              : {results.bic:.2f}")

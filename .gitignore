@@ -4,6 +4,8 @@ output_sarima_v1
 output_sarima_v2
 output_xgboost_v1
 output_xgboost_v2
+output_catboost_v2
+catboost_info
 raw-data
 daily_pattern.png
 segmentasi_customer.png

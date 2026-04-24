@@ -3,15 +3,14 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import xgboost as xgb
+from catboost import CatBoostRegressor
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 import matplotlib.dates as mdates
 import calendar
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 st.set_page_config(page_title="Forecasting Okupansi Hotel Dangau", layout="wide")
 
-st.title("Dashboard Prediksi Tingkat Okupansi Hotel Dangau Kubu Raya dengan SARIMA dan XGBoost")
+st.title("Dashboard Prediksi Tingkat Okupansi Hotel Dangau Kubu Raya dengan SARIMA dan CatBoost")
 
 # --------------------------------------------------
 # 1. LOAD DATA & PREPROCESSING
@@ -182,87 +181,78 @@ with tab_forecast:
     
     @st.cache_resource
     def train_models(train_data, test_data):
-        # SARIMA Setup
-        sv1 = SARIMAX(train_data, order=(1, 0, 0), seasonal_order=(1, 0, 1, 12), enforce_stationarity=False, enforce_invertibility=False)
-        p_sv1 = np.round(sv1.fit(disp=False).get_forecast(steps=n_test).predicted_mean)
+        # ── SARIMA (Forced Seasonal D=1) ──────────────────────────
+        sv = SARIMAX(train_data, order=(1, 1, 0), seasonal_order=(0, 1, 1, 12),
+                      enforce_stationarity=True, enforce_invertibility=True)
+        p_sv = np.round(sv.fit(disp=False).get_forecast(steps=n_test).predicted_mean)
 
-        sv2 = SARIMAX(train_data, order=(1, 1, 0), seasonal_order=(0, 1, 1, 12), enforce_stationarity=False, enforce_invertibility=False)
-        p_sv2 = np.round(sv2.fit(disp=False).get_forecast(steps=n_test).predicted_mean)
-
-        # XGBoost Setup
+        # ── CatBoost (Log Transform & Advanced Features) ──────────
         df_ts = pd.DataFrame(monthly_checkin)
-        
-        def feat_v1(d, col):
-            tmp = d.copy()
-            for i in [1,2,3,6,12]: tmp[f'lag_{i}'] = tmp[col].shift(i)
-            tmp['month']   = tmp.index.month
-            tmp['year']    = tmp.index.year
-            tmp['quarter'] = tmp.index.quarter
-            return tmp.dropna()
 
-        def feat_v2(d, col):
+        def feat(d, col):
             tmp = d.copy()
-            for i in [1,2,3,6,12]: tmp[f'lag_{i}'] = tmp[col].shift(i)
+            for i in [1, 2, 3, 6, 12]:
+                tmp[f'lag_{i}'] = tmp[col].shift(i)
             tmp['rolling_mean_3'] = tmp[col].shift(1).rolling(window=3).mean()
             tmp['rolling_std_3']  = tmp[col].shift(1).rolling(window=3).std()
             tmp['month']   = tmp.index.month
             tmp['year']    = tmp.index.year
             tmp['quarter'] = tmp.index.quarter
-            tmp['is_high_season'] = tmp['month'].apply(lambda x: 1 if x in [6,7,8,9,10,11,12] else 0)
-            tmp['is_low_season']  = tmp['month'].apply(lambda x: 1 if x in [4,5] else 0)
+            tmp['is_high_season'] = tmp['month'].apply(lambda x: 1 if x in [6, 7, 8, 9, 10, 11, 12] else 0)
+            tmp['is_low_season']  = tmp['month'].apply(lambda x: 1 if x in [4, 5] else 0)
             tmp['days_in_month']  = tmp.index.map(lambda x: calendar.monthrange(x.year, x.month)[1])
-            tmp['t_weekends']     = [sum(1 for week in calendar.monthcalendar(d.year, d.month) if week[4]!=0)+sum(1 for week in calendar.monthcalendar(d.year, d.month) if week[5]!=0) for d in tmp.index]
+            tmp['t_weekends']     = [
+                sum(1 for week in calendar.monthcalendar(d.year, d.month) if week[4] != 0) +
+                sum(1 for week in calendar.monthcalendar(d.year, d.month) if week[5] != 0)
+                for d in tmp.index
+            ]
             return tmp.dropna()
 
-        # Fit XGB v1
-        fv1 = feat_v1(df_ts, 'Jumlah_CheckIn')
-        tr_x1, ts_x1 = fv1.iloc[:-n_test], fv1.iloc[-n_test:]
-        xgb1 = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=4, random_state=42)
-        xgb1.fit(tr_x1.drop('Jumlah_CheckIn', axis=1), tr_x1['Jumlah_CheckIn'])
-        p_xv1 = pd.Series(np.round(xgb1.predict(ts_x1.drop('Jumlah_CheckIn', axis=1))), index=test_data.index)
-
-        # Fit XGB v2
         d2 = df_ts.copy()
         d2['Log_Y'] = np.log1p(d2['Jumlah_CheckIn'])
-        fv2 = feat_v2(d2, 'Log_Y')
-        tr_x2, ts_x2 = fv2.iloc[:-n_test], fv2.iloc[-n_test:]
-        xgb2 = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=4, random_state=42)
-        xgb2.fit(tr_x2.drop(['Jumlah_CheckIn', 'Log_Y'], axis=1, errors='ignore'), tr_x2['Log_Y'])
-        p_xv2 = pd.Series(np.round(np.expm1(xgb2.predict(ts_x2.drop(['Jumlah_CheckIn', 'Log_Y'], axis=1, errors='ignore')))), index=test_data.index)
-        
-        return p_sv1, p_sv2, p_xv1, p_xv2
+        fv = feat(d2, 'Log_Y')
+        tr_x, ts_x = fv.iloc[:-n_test], fv.iloc[-n_test:]
 
-    with st.spinner("Sedang memproses dan melatih ke-4 Algoritma AI..."):
-        p_s1, p_s2, p_x1, p_x2 = train_models(train_ts, test_ts)
+        cb = CatBoostRegressor(iterations=100, learning_rate=0.1, depth=4, random_seed=42, verbose=0)
+        cb.fit(
+            tr_x.drop(['Jumlah_CheckIn', 'Log_Y'], axis=1, errors='ignore'),
+            tr_x['Log_Y']
+        )
+        p_cb = pd.Series(
+            np.round(np.expm1(cb.predict(ts_x.drop(['Jumlah_CheckIn', 'Log_Y'], axis=1, errors='ignore')))),
+            index=test_data.index
+        )
+
+        return p_sv, p_cb
+
+    with st.spinner("Sedang memproses dan melatih ke-2 Algoritma AI..."):
+        p_s, p_cb = train_models(train_ts, test_ts)
 
     def get_metrics(actual, pred, name):
-        mae = mean_absolute_error(actual, pred)
-        rmse = np.sqrt(mean_squared_error(actual, pred))
         mape = np.mean(np.abs((actual - pred) / actual)) * 100
-        return {'Model': name, 'MAE': mae, 'RMSE': rmse, 'MAPE (%)': mape}
+        return {'Model': name, 'MAPE (%)': round(mape, 2)}
 
     metrics_list = [
-        get_metrics(test_ts.values, p_s1.values, "SARIMA v1 (Statis)"),
-        get_metrics(test_ts.values, p_s2.values, "SARIMA v2 (Tuning Musiman)"),
-        get_metrics(test_ts.values, p_x1.values, "XGBoost v1 (Lags Basic)"),
-        get_metrics(test_ts.values, p_x2.values, "XGBoost v2 (Analisis Kalender + Log)")
+        get_metrics(test_ts.values, p_s.values,  "SARIMA (Tuning Musiman)"),
+        get_metrics(test_ts.values, p_cb.values, "CatBoost (Analisis Kalender + Log)"),
     ]
     df_metrics = pd.DataFrame(metrics_list)
 
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("🎯 Metrik Akurasi")
-        st.dataframe(df_metrics.style.highlight_min(subset=['MAE', 'RMSE', 'MAPE (%)'], color='lightgreen', axis=0), width='stretch')
+        st.dataframe(
+            df_metrics.style.highlight_min(subset=['MAPE (%)'], color='lightgreen', axis=0),
+            width='stretch'
+        )
 
     with col2:
         st.subheader("📈 Komparasi 6 Bulan Terakhir")
         fig_cmp, ax_cmp = plt.subplots(figsize=(10, 4))
         ax_cmp.plot(train_ts[-12:].index, train_ts[-12:].values, marker='o', color='gray', alpha=0.3, label='Train (Past Year)')
         ax_cmp.plot(test_ts.index, test_ts.values, marker='o', color='black', linewidth=3, label='Aktual Data')
-        ax_cmp.plot(test_ts.index, p_s1.values, marker='s', linestyle=':', label='SARIMA v1', alpha=0.5)
-        ax_cmp.plot(test_ts.index, p_s2.values, marker='s', linestyle='--', label='SARIMA v2')
-        ax_cmp.plot(test_ts.index, p_x1.values, marker='^', linestyle=':', label='XGB v1', alpha=0.5)
-        ax_cmp.plot(test_ts.index, p_x2.values, marker='*', linestyle='-', color='red', linewidth=2, label='XGB v2')
+        ax_cmp.plot(test_ts.index, p_s.values,  marker='s', linestyle='--', label='SARIMA')
+        ax_cmp.plot(test_ts.index, p_cb.values, marker='*', linestyle='-', color='red', linewidth=2, label='CatBoost')
         ax_cmp.axvline(x=test_ts.index[0], color='black', linestyle='--', alpha=0.2)
         ax_cmp.legend(fontsize=8)
         st.pyplot(fig_cmp)
@@ -271,9 +261,96 @@ with tab_forecast:
     df_preds = pd.DataFrame({
         'Bulan': test_ts.index.strftime('%B %Y'),
         'Aktual': test_ts.values,
-        'SARIMA v1': p_s1.values.astype(int),
-        'SARIMA v2': p_s2.values.astype(int),
-        'XGBoost v1': p_x1.values.astype(int),
-        'XGBoost v2': p_x2.values.astype(int)
+        'SARIMA': p_s.values.astype(int),
+        'CatBoost': p_cb.values.astype(int),
     })
     st.dataframe(df_preds, width='stretch')
+
+    st.divider()
+
+    @st.cache_resource
+    def forecast_future(full_data):
+        # ── SARIMA Full ──────────────────────────
+        sv_full = SARIMAX(full_data, order=(1, 1, 0), seasonal_order=(0, 1, 1, 12),
+                           enforce_stationarity=True, enforce_invertibility=True)
+        p_sv_fut = np.round(sv_full.fit(disp=False).get_forecast(steps=12).predicted_mean)
+
+        # ── CatBoost Full ──────────────────────────
+        df_ts = pd.DataFrame(full_data)
+        d2 = df_ts.copy()
+        d2['Log_Y'] = np.log1p(d2['Jumlah_CheckIn'])
+
+        def feat(d, col):
+            tmp = d.copy()
+            for i in [1, 2, 3, 6, 12]:
+                tmp[f'lag_{i}'] = tmp[col].shift(i)
+            tmp['rolling_mean_3'] = tmp[col].shift(1).rolling(window=3).mean()
+            tmp['rolling_std_3']  = tmp[col].shift(1).rolling(window=3).std()
+            tmp['month']   = tmp.index.month
+            tmp['year']    = tmp.index.year
+            tmp['quarter'] = tmp.index.quarter
+            tmp['is_high_season'] = tmp['month'].apply(lambda x: 1 if x in [6, 7, 8, 9, 10, 11, 12] else 0)
+            tmp['is_low_season']  = tmp['month'].apply(lambda x: 1 if x in [4, 5] else 0)
+            tmp['days_in_month']  = tmp.index.map(lambda x: calendar.monthrange(x.year, x.month)[1])
+            tmp['t_weekends']     = [
+                sum(1 for week in calendar.monthcalendar(dt.year, dt.month) if week[4] != 0) +
+                sum(1 for week in calendar.monthcalendar(dt.year, dt.month) if week[5] != 0)
+                for dt in tmp.index
+            ]
+            return tmp.dropna()
+
+        fv_full = feat(d2, 'Log_Y')
+        X_full = fv_full.drop(['Jumlah_CheckIn', 'Log_Y'], axis=1, errors='ignore')
+        y_full = fv_full['Log_Y']
+
+        cb_full = CatBoostRegressor(iterations=100, learning_rate=0.1, depth=4, random_seed=42, verbose=0)
+        cb_full.fit(X_full, y_full)
+
+        future_dates = pd.date_range(start=full_data.index[-1] + pd.DateOffset(months=1), periods=12, freq='MS')
+        cb_forecasts = []
+        current_history = d2['Log_Y'].copy()
+
+        for date in future_dates:
+            rolling_history = current_history.iloc[-3:] if len(current_history) >= 3 else current_history
+            roll_mean_3 = rolling_history.mean() if len(rolling_history) > 0 else 0
+            roll_std_3  = rolling_history.std() if len(rolling_history) > 1 else 0
+            
+            days = calendar.monthcalendar(date.year, date.month)
+            weekend_count = sum(1 for week in days if week[4] != 0) + sum(1 for week in days if week[5] != 0)
+            
+            features = {
+                'lag_1': current_history.iloc[-1] if len(current_history) >= 1 else 0,
+                'lag_2': current_history.iloc[-2] if len(current_history) >= 2 else 0,
+                'lag_3': current_history.iloc[-3] if len(current_history) >= 3 else 0,
+                'lag_6': current_history.iloc[-6] if len(current_history) >= 6 else 0,
+                'lag_12': current_history.iloc[-12] if len(current_history) >= 12 else 0,
+                'rolling_mean_3': roll_mean_3,
+                'rolling_std_3': roll_std_3,
+                'month': date.month,
+                'year': date.year,
+                'quarter': date.quarter,
+                'is_high_season': 1 if date.month in [6, 7, 8, 9, 10, 11, 12] else 0,
+                'is_low_season': 1 if date.month in [4, 5] else 0,
+                'days_in_month': calendar.monthrange(date.year, date.month)[1],
+                't_weekends': weekend_count
+            }
+            
+            X_fut = pd.DataFrame([features], index=[date])[X_full.columns]
+            y_pred_log = cb_full.predict(X_fut)[0]
+            y_pred_asli = max(0, round(np.expm1(y_pred_log)))
+            
+            cb_forecasts.append(y_pred_asli)
+            current_history.loc[date] = y_pred_log
+
+        return future_dates, p_sv_fut.values, cb_forecasts
+
+    with st.spinner("Sedang menghitung prediksi untuk 12 Bulan (Tahun 2026)..."):
+        fut_dates, p_s_fut, p_cb_fut = forecast_future(monthly_checkin)
+
+    st.subheader("🚀 Prediksi Okupansi Tahun Depan (Jan - Des 2026)")
+    df_fut = pd.DataFrame({
+        'Bulan': fut_dates.strftime('%B %Y'),
+        'SARIMA': np.array(p_s_fut).astype(int),
+        'CatBoost': np.array(p_cb_fut).astype(int),
+    })
+    st.dataframe(df_fut, width='stretch')
